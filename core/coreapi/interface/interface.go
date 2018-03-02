@@ -10,9 +10,14 @@ import (
 
 	options "github.com/ipfs/go-ipfs/core/coreapi/interface/options"
 
+	ma "gx/ipfs/QmWWQ2Txc2c6tqjsBpzg5Ar652cHPGNsQQp2SejkNmkUMb/go-multiaddr"
+	peer "gx/ipfs/QmZoWKhxUmZ2seW4BzX6fJkNR8hh9PsGModr7q171yq2SS/go-libp2p-peer"
 	cid "gx/ipfs/QmcZfnkapfECQGcLZaf9B79NRg7cRa9EnZh4LSbkCzwNvY/go-cid"
 	ipld "gx/ipfs/Qme5bWv7wtjUNGsK2BNGVUFPKiuxWrsqrtvYwCLRw8YFES/go-ipld-format"
 )
+
+var ErrIsDir = errors.New("object is a directory")
+var ErrOffline = errors.New("can't resolve, ipfs node is offline")
 
 // Path is a generic wrapper for paths used in the API. A path can be resolved
 // to a CID using one of Resolve functions in the API.
@@ -31,6 +36,8 @@ type Path interface {
 //       if we didn't, godoc would generate nice links straight to go-ipld-format
 type Node ipld.Node
 type Link ipld.Link
+type PeerID peer.ID
+type Addr ma.Multiaddr
 
 type Reader interface {
 	io.ReadSeeker
@@ -83,6 +90,39 @@ type BadPinNode interface {
 
 	// Err is the reason why the node has been marked as bad
 	Err() error
+}
+
+// PubSubSubscription is an active PubSub subscription
+type PubSubSubscription interface {
+	io.Closer
+
+	// Chan return incoming message channel
+	Chan(context.Context) <-chan PubSubMessage
+}
+
+// PubSubMessage is a single PubSub message
+type PubSubMessage interface {
+	// From returns id of a peer from which the message has arrived
+	From() PeerID
+
+	// Data returns the message body
+	Data() []byte
+}
+
+// PeerInfo contains information about a peer
+type PeerInfo interface {
+	// ID returns PeerID
+	ID() PeerID
+
+	// Address returns the multiaddress via which we are connected with the peer
+	Address() Addr
+
+	// Latency returns last known round trip time to the peer
+	Latency() time.Duration
+
+	// Streams returns list of streams established with the peer
+	// TODO: should this return multicodecs?
+	Streams() []string
 }
 
 // CoreAPI defines an unified interface to IPFS for Go programs.
@@ -385,5 +425,56 @@ type PinAPI interface {
 	Verify(context.Context) (<-chan PinStatus, error)
 }
 
-var ErrIsDir = errors.New("object is a directory")
-var ErrOffline = errors.New("can't resolve, ipfs node is offline")
+// DhtAPI specifies the interface to the DHT
+type DhtAPI interface {
+	// FindPeer queries the DHT for all of the multiaddresses associated with a
+	// Peer ID
+	FindPeer(context.Context, PeerID) (<-chan Addr, error)
+
+	// FindProviders finds peers in the DHT who can provide a specific value
+	// given a key.
+	FindProviders(context.Context, Path) (<-chan PeerID, error) //TODO: is path the right choice here?
+
+	// Provide announces to the network that you are providing given values
+	Provide(context.Context, Path, ...options.DhtProvideOption) error
+
+	// WithRecursive is an option for Provide which specifies whether to provide
+	// the given path recursively
+	WithRecursive(recursive bool) options.DhtProvideOption
+}
+
+// PubSubAPI specifies the interface to PubSub
+type PubSubAPI interface {
+	// Ls lists subscribed topics by name
+	Ls(context.Context) ([]string, error)
+
+	// Peers list peers we are currently pubsubbing with
+	// TODO: WithTopic
+	Peers(context.Context, ...options.PubSubPeersOption) ([]PeerID, error)
+
+	// WithTopic is an option for peers which specifies a topic filter for the
+	// function
+	WithTopic(topic string) options.PubSubPeersOption
+
+	// Publish a message to a given pubsub topic
+	Publish(context.Context, string, []byte) error
+
+	// Subscribe to messages on a given topic
+	Subscribe(context.Context, string) (PubSubSubscription, error)
+
+	// WithDiscover is an option for Subscribe which specifies whether to try to
+	// discover other peers subscribed to the same topic
+	WithDiscover(discover bool) options.PubSubSubscribeOption
+}
+
+// SwarmAPI specifies the interface to libp2p swarm
+type SwarmAPI interface {
+	// Connect to a given address
+	Connect(context.Context, Addr) error
+
+	// Disconnect from a given address
+	Disconnect(context.Context, Addr) error
+
+	// Peers returns the list of peers we are connected to
+	Peers(context.Context) ([]PeerInfo, error)
+}
